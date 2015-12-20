@@ -5,52 +5,43 @@
 
 #define BUBBLE 0x4033
 
+#define BRANCH_PREDICTOR TSPredictor
 
-// Modify this line to substitute YOUR branch predictor for the
-// default BTB...
-#define BRANCH_PREDICTOR BTB
-
-
-//
-// Custom Branch Predictors
-//
-
-//  TODO: add your BranchPredictor implementations here!
-
-class PredictorTemplate : public BranchPredictor
+// TODO: fill the code here!!
+class TSPredictor : public BranchPredictor
 {
   private:
-    // Define your predictor's internal data structures here
+    uint32_t hash_with_history(const uint32_t pc) {
+      // Use 34 bit of history and 30 bit of pc.
+      // It's just because that it fit uint64_t.
+      return (history<<30)|(pc>>2);
+    }
+    uint64_t history = 0;
   public:
-    PredictorTemplate ( struct bp_io& io ) : BranchPredictor ( io )
+    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io )
     {
-      // Initialize your predictor state here
     }
 
-    ~PredictorTemplate ( ) 
+    ~TSPredictor ( )
     {
-      // delete any structures you heap-allocated here
     }
 
     uint32_t predict_fetch ( uint32_t pc )
     {
-      // Predict the next PC here (or return 0 to predict not taken)
       return 0;
     }
 
-
-    void update_execute ( uint32_t pc, 
-                          uint32_t pc_next, 
+    void update_execute ( uint32_t pc,
+                          uint32_t pc_next,
                           bool mispredict,
-                          bool is_brjmp, 
+                          bool is_brjmp,
                           uint32_t inst )
     {
-      if ( is_brjmp )
-      {
-        // update your predictor state here
+      if (not is_brjmp) {
+        return;
       }
-
-      // Note that this function is called for every inst, not just br/jmp!
+      const bool taken = pc+4 != pc_next;
+      history = (history<<1) | taken;
     }
 };
 
