@@ -17,6 +17,17 @@ class TSPredictor : public BranchPredictor
       return (history<<30)|(pc>>2);
     }
     uint64_t history = 0;
+
+    /* Use TS history of TS_LEN
+     * We use a timestamp to represent the replaying head.
+     * We can compare the current timestamp and the recorded timestamp to check whether it's valid.
+     * Currently we just accept timestamp overflow.
+     */
+    const uint16_t TS_LEN = 1024; // must divide 65536
+    uint16_t timestamp = TS_LEN;
+    uint16_t replay_position = 0;
+    bool ts_history[TS_LEN];
+    bool base_prediction = false, replaying = false;
   public:
     TSPredictor ( struct bp_io& io ) : BranchPredictor ( io )
     {
@@ -28,7 +39,19 @@ class TSPredictor : public BranchPredictor
 
     uint32_t predict_fetch ( uint32_t pc )
     {
-      return 0;
+      base_prediction = /* TODO: predict use BP */;
+      bool ts_prediction = base_prediction;
+      if (replaying) {
+        if (ts_history[replay_position]) {
+          ts_prediction = not ts_prediction;
+        }
+        replay_position = replay_position==TS_LEN-1 ? 0: replay_position+1;
+      }
+      if (ts_prediction) {
+        // TODO: lookup branch target buffer
+      } else {
+        return 0;
+      }
     }
 
     void update_execute ( uint32_t pc,
@@ -40,8 +63,22 @@ class TSPredictor : public BranchPredictor
       if (not is_brjmp) {
         return;
       }
-      const bool taken = pc+4 != pc_next;
-      history = (history<<1) | taken;
+      // TODO: update BP
+      const bool outcome = pc+4 != pc_next;
+      const bool base_is_correct = base_prediction == outcome;
+      history = (history<<1) | outcome;
+      ts_history[timestamp%TS_LEN] = base_prediction == outcome;
+      timestamp++;
+      if (mispredict) {
+        replaying = false;
+      }
+      if (not base_is_correct) {
+        if (/* TODO: Can we find a valid timestamp using current (history, pc) */) {
+          replay_position = /* the found timestamp */;
+          replaying = true;
+        }
+        // TODO: store (pc, history) -> timestamp mapping
+      }
     }
 };
 
