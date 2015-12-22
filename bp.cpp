@@ -9,6 +9,7 @@ using namespace std;
 #define BUBBLE 0x4033
 
 #define BRANCH_PREDICTOR TSPredictor
+#define WRAP_INC(a, b) a = a==b ? 0 : a+1
 
 class TSPredictor : public BranchPredictor
 {
@@ -42,7 +43,7 @@ class TSPredictor : public BranchPredictor
           if (invalid_entry == nullptr) {
             return make_pair(false, invalid_entry);
           }
-          this->counter = this->counter == this->assoc_ ? 0 : this->counter_+1;
+		  WRAP_INC(this->counter_, this->assoc_);
           return make_pair(true, target_set+this->counter_);
         }
       protected:
@@ -81,9 +82,9 @@ class TSPredictor : public BranchPredictor
     uint32_t hash_with_history(const uint32_t pc) {
       // Use 34 bit of history and 30 bit of pc.
       // It's just because that it fit uint64_t.
-      return (history<<30)|(pc>>2);
+      return (this->history_<<30)|(pc>>2);
     }
-    uint64_t history = 0;
+    uint64_t history_ = 0;
 
     /* Use TS history of TS_LEN
      * In tsc, we use a timestamp to represent the replaying head.
@@ -91,12 +92,12 @@ class TSPredictor : public BranchPredictor
      * Currently we just accept timestamp overflow.
      */
     const uint16_t TS_LEN = 1024; // must divide 65536
-    uint16_t replay_position = 0;
-    bool ts_history[TS_LEN];
-    bool base_prediction = false, replaying = false;
-    TsReplayHeadCache tsc;
+    uint16_t replay_position_ = 0;
+    bool ts_history_[TS_LEN];
+    bool base_prediction_ = false, replaying_ = false;
+    TsReplayHeadCache tsc_;
   public:
-    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc(TS_LEN)
+    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(TS_LEN)
     {
     }
 
@@ -106,13 +107,13 @@ class TSPredictor : public BranchPredictor
 
     uint32_t predict_fetch ( uint32_t pc )
     {
-      base_prediction = /* TODO: predict use BP */;
-      bool ts_prediction = base_prediction;
-      if (replaying) {
-        if (ts_history[replay_position]) {
+      this->base_prediction_ = /* TODO: predict use BP */;
+      bool ts_prediction = this->base_prediction_;
+      if (this->replaying_) {
+        if (this->ts_history_[this->replay_position_]) {
           ts_prediction = not ts_prediction;
         }
-        replay_position = replay_position==TS_LEN-1 ? 0: replay_position+1;
+		WRAP_INC(this->replay_position_, TS_LEN);
       }
       if (ts_prediction) {
         // TODO: lookup branch target buffer
@@ -132,28 +133,28 @@ class TSPredictor : public BranchPredictor
       }
       // TODO: update BP
       const bool outcome = pc+4 != pc_next;
-      const bool base_is_correct = base_prediction == outcome;
-      history = (history<<1) | outcome;
-      ts_history[tsc.timestamp_%TS_LEN] = base_prediction == outcome;
-      tsc.timestamp_++;
+      const bool base_is_correct = this->base_prediction_ == outcome;
+      this->history_ = (this->history_<<1) | outcome;
+      this->ts_history_[this->tsc_.timestamp_%TS_LEN] = base_is_correct;
+      this->tsc_.timestamp_++;
       if (mispredict) {
-        replaying = false;
+        this->replaying_ = false;
       }
       if (not base_is_correct) {
         TsReplayHeadCache::AddrType hashed = hash_with_history(pc);
-        TsReplayHeadCache::EntryType *entry = tsc.Search(hashed);
+        TsReplayHeadCache::EntryType *entry = this->tsc_.Search(hashed);
         if (entry != nullptr) {
           // Found
-          replay_position = entry->second;
-          replaying = true;
+          this->replay_position_ = entry->second;
+          this->replaying_ = true;
         } else {
           // Not found
-          entry = tsc.Insert(hashed).second;
-          entry->first = tsc.hashed;
+          entry = this->tsc_.Insert(hashed).second;
+          entry->first = this->tsc_.hashed;
         }
         // Store (pc, history) -> timestamp mapping
         assert(entry->first == hashed);
-        entry->second = tsc.timestamp_;
+        entry->second = this->tsc_.timestamp_;
       }
     }
 };
