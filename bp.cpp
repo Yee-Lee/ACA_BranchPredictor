@@ -13,10 +13,12 @@ using namespace std;
 
 class TSPredictor : public BranchPredictor
 {
-    template<typename AddrType, typename DataType>
+    template<typename AddrType_, typename DataType_>
     class Cache
     {
       public:
+        typedef AddrType_ AddrType;
+        typedef DataType_ DataType;
         typedef pair<AddrType, DataType> EntryType;
         Cache(const int assoc, const int n_order):
             assoc_(assoc),
@@ -26,10 +28,10 @@ class TSPredictor : public BranchPredictor
 
         EntryType* Search(const AddrType addr) {
           const AddrType idx = addr >> this->n_order_;
-          EntryType *target_set = &(this->storage_[idx*assoc_+i]);
+          EntryType *target_set = &this->storage_[idx*this->assoc_];
           for (int i = 0; i < this->assoc_; ++i) {
             EntryType *cur = target_set+i;
-            if (Match(cur, addr)) {
+            if (Match(addr, *cur)) {
               return cur;
             }
           }
@@ -38,41 +40,48 @@ class TSPredictor : public BranchPredictor
         pair<bool,EntryType*> FindInsert(const AddrType addr) {
           // return valid, position
           const AddrType idx = addr >> this->n_order_;
-          EntryType *target_set = &(this->storage_[idx*assoc_+i]);
+          EntryType *target_set = &this->storage_[idx*this->assoc_];
           EntryType *invalid_entry = FindInvalid(target_set);
           if (invalid_entry == nullptr) {
             return make_pair(false, invalid_entry);
           }
-		  WRAP_INC(this->counter_, this->assoc_);
+          WRAP_INC(this->counter_, this->assoc_);
           return make_pair(true, target_set+this->counter_);
         }
       protected:
-        virtual bool Match(const AddrType addr, const EntryType e) = 0;
-        virtual EntryType* FindInvalid(const EntryType *target_set) = 0;
-      private:
-        int assoc_, n_order_, counter_ = 0;
+        virtual bool Match(const AddrType addr, const EntryType &e) = 0;
+        virtual EntryType* FindInvalid(EntryType *target_set) = 0;
+        const int assoc_, n_order_;
+        int counter_ = 0;
         unique_ptr<EntryType[]> storage_;
     };
 
     class TsReplayHeadCache: public Cache<uint64_t, uint16_t> {
       public:
         TsReplayHeadCache(int assoc, int n_order, DataType timeout):
-            Cache<uint64_t, uint16_t>(assoc, n_order),
-            timestamp_(timeout), timeout_(timeout) {}
-          for (int i = 0; i < this->assoc<<this->n_order_; ++i) {
+          Cache<uint64_t, uint16_t>(assoc, n_order),
+          timestamp_(timeout), timeout_(timeout)
+        {
+          for (int i = 0; i < this->assoc_<<this->n_order_; ++i) {
             this->storage_[i].second = 0;
           }
         }
         DataType timestamp_;
       protected:
         DataType timeout_;
-        virtual bool Match(const AddrType addr, const EntryType e) {
-          return e.first == addr and e.second+timeout>timestamp_ and e.second>timestamp_-timeout;
+        virtual bool Match(const AddrType addr, const EntryType &e) {
+          return
+            e.first == addr and
+            e.second+this->timeout_ > this->timestamp_ and
+            e.second > this->timestamp_-this->timeout_;
         }
-        virtual EntryType* FindInvalid(const EntryType *target_set) {
+        virtual EntryType* FindInvalid(EntryType *target_set) {
           for (int i = 0; i < this->assoc_; ++i) {
-            if (target_set[i].second+timeout>timestamp_ and target_set[i].second>timestamp_-timeout) {
-              return target_set[i];
+            if (
+              target_set[i].second+this->timeout_ > this->timestamp_ and
+              target_set[i].second > this->timestamp_-this->timeout_
+            ) {
+              return target_set+i;
             }
           }
           return nullptr;
@@ -91,13 +100,13 @@ class TSPredictor : public BranchPredictor
      * We can compare the current timestamp and the recorded timestamp to check whether it's valid.
      * Currently we just accept timestamp overflow.
      */
-    const uint16_t TS_LEN = 1024; // must divide 65536
+    static constexpr uint16_t TS_LEN = 1024; // must divide 65536
     uint16_t replay_position_ = 0;
     bool ts_history_[TS_LEN];
     bool base_prediction_ = false, replaying_ = false;
     TsReplayHeadCache tsc_;
   public:
-    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(TS_LEN)
+    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(4, 10, TS_LEN)
     {
     }
 
@@ -107,13 +116,13 @@ class TSPredictor : public BranchPredictor
 
     uint32_t predict_fetch ( uint32_t pc )
     {
-      this->base_prediction_ = /* TODO: predict use BP */;
+      this->base_prediction_ = true; // TODO: predict use BP
       bool ts_prediction = this->base_prediction_;
       if (this->replaying_) {
         if (this->ts_history_[this->replay_position_]) {
           ts_prediction = not ts_prediction;
         }
-		WRAP_INC(this->replay_position_, TS_LEN);
+        WRAP_INC(this->replay_position_, TS_LEN);
       }
       if (ts_prediction) {
         // TODO: lookup branch target buffer
@@ -149,8 +158,8 @@ class TSPredictor : public BranchPredictor
           this->replaying_ = true;
         } else {
           // Not found
-          entry = this->tsc_.Insert(hashed).second;
-          entry->first = this->tsc_.hashed;
+          entry = this->tsc_.FindInsert(hashed).second;
+          entry->first = hashed;
         }
         // Store (pc, history) -> timestamp mapping
         assert(entry->first == hashed);
