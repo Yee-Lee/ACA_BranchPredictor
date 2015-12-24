@@ -56,6 +56,29 @@ class TSPredictor : public BranchPredictor
         unique_ptr<EntryType[]> storage_;
     };
 
+    class BranchTargetCache: public Cache<uint32_t, uint32_t> {
+      public:
+        BranchTargetCache(int assoc, int n_order):
+          Cache<uint32_t, uint32_t>(assoc, n_order)
+        {
+          for (int i = 0; i < this->assoc_<<this->n_order_; ++i) {
+            this->storage_[i].first = 0;
+          }
+        }
+      protected:
+        virtual bool Match(const AddrType addr, const EntryType &e) {
+          return addr == e.first;
+        }
+        virtual EntryType* FindInvalid(EntryType *target_set) {
+          for (int i = 0; i < this->assoc_; ++i) {
+            if (target_set[i].first == 0) {
+              return target_set+i;
+            }
+          }
+          return nullptr;
+        }
+    };
+
     class TsReplayHeadCache: public Cache<uint64_t, uint16_t> {
       public:
         TsReplayHeadCache(int assoc, int n_order, DataType timeout):
@@ -105,8 +128,9 @@ class TSPredictor : public BranchPredictor
     bool ts_history_[TS_LEN];
     bool base_prediction_ = false, replaying_ = false;
     TsReplayHeadCache tsc_;
+    BranchTargetCache btc_;
   public:
-    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(4, 10, TS_LEN)
+    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(4, 10, TS_LEN), btc_(4, 10)
     {
     }
 
@@ -125,8 +149,9 @@ class TSPredictor : public BranchPredictor
         WRAP_INC(this->replay_position_, TS_LEN);
       }
       if (ts_prediction) {
-        // TODO: lookup branch target buffer
-        return 0;
+        // Lookup branch target buffer
+        BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
+        return entry == nullptr ? 0 : entry->second;
       } else {
         return 0;
       }
@@ -143,6 +168,18 @@ class TSPredictor : public BranchPredictor
       }
       // TODO: update BP
       const bool outcome = pc+4 != pc_next;
+      // update branch target cache
+      if (outcome) {
+        BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
+        if (entry == nullptr) {
+          // Not found
+          entry = this->btc_.FindInsert(pc).second;
+          entry->first = pc;
+        }
+        // Store pc -> pc_next mapping
+        assert(entry->first == pc);
+        entry->second = pc_next;
+      }
       const bool base_is_correct = this->base_prediction_ == outcome;
       this->history_ = (this->history_<<1) | outcome;
       this->ts_history_[this->tsc_.timestamp_%TS_LEN] = base_is_correct;
