@@ -27,7 +27,7 @@ class TSPredictor : public BranchPredictor
         virtual ~Cache() {};
 
         EntryType* Search(const AddrType addr) {
-          const AddrType idx = addr >> this->n_order_;
+          const AddrType idx = addr & ((1<<this->n_order_)-1);
           EntryType *target_set = &this->storage_[idx*this->assoc_];
           for (int i = 0; i < this->assoc_; ++i) {
             EntryType *cur = target_set+i;
@@ -39,10 +39,10 @@ class TSPredictor : public BranchPredictor
         }
         pair<bool,EntryType*> FindInsert(const AddrType addr) {
           // return valid, position
-          const AddrType idx = addr >> this->n_order_;
+          const AddrType idx = addr & ((1<<this->n_order_)-1);
           EntryType *target_set = &this->storage_[idx*this->assoc_];
           EntryType *invalid_entry = FindInvalid(target_set);
-          if (invalid_entry == nullptr) {
+          if (invalid_entry != nullptr) {
             return make_pair(false, invalid_entry);
           }
           WRAP_INC(this->counter_, this->assoc_);
@@ -126,6 +126,7 @@ class TSPredictor : public BranchPredictor
       }
       if (ts_prediction) {
         // TODO: lookup branch target buffer
+        return 0;
       } else {
         return 0;
       }
