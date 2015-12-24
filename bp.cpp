@@ -9,7 +9,7 @@ using namespace std;
 #define BUBBLE 0x4033
 
 #define BRANCH_PREDICTOR TSPredictor
-#define WRAP_INC(a, b) a = a==b ? 0 : a+1
+#define WRAP_INC(a, b) a = a==b-1 ? 0 : a+1
 
 class TSPredictor : public BranchPredictor
 {
