@@ -34,6 +34,9 @@ run only benchmarks
 
     $ make run-bmarks-test
 
+mannually launch emulator 
+
+    $./emulator +max-cycles=10000000000  +verbose +coremap-random +loadmem={WHERE_YOUR_APP} none 2>/dev/null
 
 Output checking
 =====================
