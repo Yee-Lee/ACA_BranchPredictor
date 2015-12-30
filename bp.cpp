@@ -9,7 +9,8 @@ using namespace std;
 #define BUBBLE 0x4033
 
 #define BRANCH_PREDICTOR TSPredictor
-#define WRAP_INC(a, b) a = a==b ? 0 : a+1
+#define WRAP_INC(a, b) a = a==b-1 ? 0 : a+1
+#define gshare_entry 5
 
 class TSPredictor : public BranchPredictor
 {
@@ -54,6 +55,29 @@ class TSPredictor : public BranchPredictor
         const int assoc_, n_order_;
         int counter_ = 0;
         unique_ptr<EntryType[]> storage_;
+    };
+
+    class BranchTargetCache: public Cache<uint32_t, uint32_t> {
+      public:
+        BranchTargetCache(int assoc, int n_order):
+          Cache<uint32_t, uint32_t>(assoc, n_order)
+        {
+          for (int i = 0; i < this->assoc_<<this->n_order_; ++i) {
+            this->storage_[i].first = 0;
+          }
+        }
+      protected:
+        virtual bool Match(const AddrType addr, const EntryType &e) {
+          return addr == e.first;
+        }
+        virtual EntryType* FindInvalid(EntryType *target_set) {
+          for (int i = 0; i < this->assoc_; ++i) {
+            if (target_set[i].first == 0) {
+              return target_set+i;
+            }
+          }
+          return nullptr;
+        }
     };
 
     class TsReplayHeadCache: public Cache<uint64_t, uint16_t> {
@@ -105,18 +129,40 @@ class TSPredictor : public BranchPredictor
     bool ts_history_[TS_LEN];
     bool base_prediction_ = false, replaying_ = false;
     TsReplayHeadCache tsc_;
+    BranchTargetCache btc_;
+
+    //gshare_table
+    uint8_t gshare_table[gshare_entry];
+
   public:
-    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(4, 10, TS_LEN)
+    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(4, 10, TS_LEN), btc_(4, 10)
     {
+      //0,1 not taken, 2,3 taken
+      for(int i=0;i<gshare_entry;i++)
+        gshare_table[i] = 2;
     }
 
     ~TSPredictor ( )
     {
+      delete[] gshare_table;
+    }
+
+    inline uint32_t gshare_choose ( const uint32_t pc )
+    {
+      // Shift PC right two because lower two bits always zero.
+      // hash(exclusive or) from pc and global history
+      return ((pc>>2) ^ (this->history_)) % gshare_entry;
     }
 
     uint32_t predict_fetch ( uint32_t pc )
     {
-      this->base_prediction_ = true; // TODO: predict use BP
+      uint32_t gshare_index = gshare_choose(pc);
+      // TODO: predict use BP
+      if(gshare_table[gshare_index]>=2)
+        this->base_prediction_ = true; 
+      else
+        this->base_prediction_ = false;
+
       bool ts_prediction = this->base_prediction_;
       if (this->replaying_) {
         if (this->ts_history_[this->replay_position_]) {
@@ -125,8 +171,9 @@ class TSPredictor : public BranchPredictor
         WRAP_INC(this->replay_position_, TS_LEN);
       }
       if (ts_prediction) {
-        // TODO: lookup branch target buffer
-        return 0;
+        // Lookup branch target buffer
+        BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
+        return entry == nullptr ? 0 : entry->second;
       } else {
         return 0;
       }
@@ -143,13 +190,42 @@ class TSPredictor : public BranchPredictor
       }
       // TODO: update BP
       const bool outcome = pc+4 != pc_next;
+      // update branch target cache
+      if (outcome) {
+        BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
+        if (entry == nullptr) {
+          // Not found
+          entry = this->btc_.FindInsert(pc).second;
+          entry->first = pc;
+        }
+        // Store pc -> pc_next mapping
+        assert(entry->first == pc);
+        entry->second = pc_next;
+      }
       const bool base_is_correct = this->base_prediction_ == outcome;
       this->history_ = (this->history_<<1) | outcome;
       this->ts_history_[this->tsc_.timestamp_%TS_LEN] = base_is_correct;
       this->tsc_.timestamp_++;
+
+      uint32_t gshare_index = gshare_choose(pc);
       if (mispredict) {
         this->replaying_ = false;
+        //update base_predictor
+        //base_predictor is false        
+        if(gshare_table[gshare_index]==2 || gshare_table[gshare_index]==3)//2,3
+          gshare_table[gshare_index] -= 1;
+        else if(gshare_table[gshare_index]==0 || gshare_table[gshare_index]==1)//0,1
+          gshare_table[gshare_index] += 1;
       }
+      //base_predictor is right
+      else {
+        //only update when neccessary
+        if(gshare_table[gshare_index] == 2)
+          gshare_table[gshare_index] += 1;
+        else if(gshare_table[gshare_index] == 1)
+          gshare_table[gshare_index] -= 1;
+      }
+
       if (not base_is_correct) {
         TsReplayHeadCache::AddrType hashed = hash_with_history(pc);
         TsReplayHeadCache::EntryType *entry = this->tsc_.Search(hashed);
@@ -382,7 +458,17 @@ BranchPredictor::BranchPredictor ( struct bp_io& _io )  : io(_io)
 BranchPredictor::~BranchPredictor ( )
 {
   
-  fprintf ( stderr, "##--------- PROFILING --------------------\n");
+  fprintf ( stdout, "##--------- PROFILING --------------------\n");
+  fprintf ( stdout, "## INSTS  %ld\n", inst_count );
+  fprintf ( stdout, "## CYCLES %ld\n", cycle_count );
+  fprintf ( stdout, "## IPC    %f\n", (double)inst_count/cycle_count );
+  fprintf ( stdout, "\n");  
+  fprintf ( stdout, "## BRJMPs      %ld\n", brjmp_count );
+  fprintf ( stdout, "## MISPREDICTS %ld\n", mispred_count );
+  fprintf ( stdout, "## MPKI        %f\n", ((double)(mispred_count*1000)/inst_count) );
+  fprintf ( stdout, "## MISS RATE   %f\n", ((double)mispred_count/brjmp_count) );
+
+ fprintf ( stderr, "##--------- PROFILING --------------------\n");
   fprintf ( stderr, "## INSTS  %ld\n", inst_count );
   fprintf ( stderr, "## CYCLES %ld\n", cycle_count );
   fprintf ( stderr, "## IPC    %f\n", (double)inst_count/cycle_count );
