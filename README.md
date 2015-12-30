@@ -1,5 +1,4 @@
-#ACA_BranchPredictor
-
+# ACA BranchPredictor
 
 Can someone provide the information about running the testcase?
 Including:
@@ -9,8 +8,7 @@ Including:
 3. explanation of the output
 4. how to quantify the output
 
-Compile
-======================
+# Compile
 
     $ cd $RISCV/riscv-sodor/emulator/rv32_5stage_bp_aca
     $ make emulator
@@ -19,8 +17,7 @@ clean old builds and output files
 
     $ make clean
 
-Run emulator
-=====================
+# Run emulator
 
 run all asembly tests and benchmarks
 
@@ -38,16 +35,21 @@ mannually launch emulator
 
     $./emulator +max-cycles=10000000000  +verbose +coremap-random +loadmem={WHERE_YOUR_APP} none 2>/dev/null
 
-Output checking
-=====================
+# Output checking
 
 All output files are stored at **output** folder
-    
+
     $ cd output
 
 output files are suffixed with **.out** extension, like *vvadd.riscv.out*
 
-    
+# Profiling
 
-Profiling
-=====================
+NoBP      | Tsp+always true | BTB
+--------- | --------------- | --------
+0.623651  | 0.195532        | 0.557129
+0.497022  | 0.373333        | 0.382523
+0.869362  | 0.118806        | 0.179226
+0.641522  | 0.263535        | 0.227269
+0.691003  | 0.368621        | 0.488781
+0.689732  | 0.193828        | 0.294693
