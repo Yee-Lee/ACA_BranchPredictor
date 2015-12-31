@@ -39,12 +39,16 @@ Output checking
 =====================
 
 All output files are stored at **output** folder
-    
+
     $ cd output
+    $ for f in `ls *.out`
+    $ do
+    $     echo $f && tail $f | grep MISS
+    $ done
 
 output files are suffixed with **.out** extension, like *vvadd.riscv.out*
 
-    
+
 
 Profiling
 =====================
