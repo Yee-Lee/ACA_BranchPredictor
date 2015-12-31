@@ -2,6 +2,7 @@
 #include <map>
 #include <cassert>
 #include <cstdio>
+#include <algorithm>
 #include <memory>
 #include <utility>
 using namespace std;
@@ -10,6 +11,7 @@ using namespace std;
 
 #define BRANCH_PREDICTOR TSPredictor
 #define WRAP_INC(a, b) a = a==b-1 ? 0 : a+1
+#define GSHARE_SIZE 8191
 
 class TSPredictor : public BranchPredictor
 {
@@ -111,7 +113,7 @@ class TSPredictor : public BranchPredictor
         }
     };
   private:
-    uint32_t hash_with_history(const uint32_t pc) {
+    inline uint32_t hash_with_history(const uint32_t pc) {
       // Use 34 bit of history and 30 bit of pc.
       // It's just because that it fit uint64_t.
       return (this->history_<<30)|(pc>>2);
@@ -129,18 +131,35 @@ class TSPredictor : public BranchPredictor
     bool base_prediction_ = false, replaying_ = false;
     TsReplayHeadCache tsc_;
     BranchTargetCache btc_;
+
+    //gshare_table
+    unique_ptr<int8_t[]> gshare_table;
+
   public:
-    TSPredictor ( struct bp_io& io ) : BranchPredictor ( io ), tsc_(4, 10, TS_LEN), btc_(4, 10)
+    TSPredictor ( struct bp_io& io ) :
+      BranchPredictor ( io ),
+      tsc_(4, 10, TS_LEN),
+      btc_(4, 10),
+      gshare_table(new int8_t[GSHARE_SIZE])
     {
+      //0,1 not taken, 2,3 taken
+      fill_n(gshare_table.get(), GSHARE_SIZE, 1);
     }
 
     ~TSPredictor ( )
     {
     }
 
+    inline int8_t* gshare_choose ( const uint32_t pc )
+    {
+      // Shift PC right two because lower two bits always zero.
+      // hash(exclusive or) from pc and global history
+      return gshare_table.get() + (hash_with_history(pc)%GSHARE_SIZE);
+    }
+
     uint32_t predict_fetch ( uint32_t pc )
     {
-      this->base_prediction_ = true; // TODO: predict use BP
+      this->base_prediction_ = *gshare_choose(pc) >= 2;
       bool ts_prediction = this->base_prediction_;
       if (this->replaying_) {
         if (this->ts_history_[this->replay_position_]) {
@@ -166,8 +185,10 @@ class TSPredictor : public BranchPredictor
       if (not is_brjmp) {
         return;
       }
-      // TODO: update BP
       const bool outcome = pc+4 != pc_next;
+      // update base predictor
+      int8_t *gshare_entry = gshare_choose(pc);
+      *gshare_entry = max(min(*gshare_entry + (outcome?1:-1), 3), 0);
       // update branch target cache
       if (outcome) {
         BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
@@ -419,7 +440,17 @@ BranchPredictor::BranchPredictor ( struct bp_io& _io )  : io(_io)
 BranchPredictor::~BranchPredictor ( )
 {
   
-  fprintf ( stderr, "##--------- PROFILING --------------------\n");
+  fprintf ( stdout, "##--------- PROFILING --------------------\n");
+  fprintf ( stdout, "## INSTS  %ld\n", inst_count );
+  fprintf ( stdout, "## CYCLES %ld\n", cycle_count );
+  fprintf ( stdout, "## IPC    %f\n", (double)inst_count/cycle_count );
+  fprintf ( stdout, "\n");  
+  fprintf ( stdout, "## BRJMPs      %ld\n", brjmp_count );
+  fprintf ( stdout, "## MISPREDICTS %ld\n", mispred_count );
+  fprintf ( stdout, "## MPKI        %f\n", ((double)(mispred_count*1000)/inst_count) );
+  fprintf ( stdout, "## MISS RATE   %f\n", ((double)mispred_count/brjmp_count) );
+
+ fprintf ( stderr, "##--------- PROFILING --------------------\n");
   fprintf ( stderr, "## INSTS  %ld\n", inst_count );
   fprintf ( stderr, "## CYCLES %ld\n", cycle_count );
   fprintf ( stderr, "## IPC    %f\n", (double)inst_count/cycle_count );
