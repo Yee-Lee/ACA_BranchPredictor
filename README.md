@@ -45,7 +45,7 @@ output files are suffixed with **.out** extension, like *vvadd.riscv.out*
 
 # Profiling
 
-		NoBP      | Tsp+always true | BTB        | TS+Gshare
+	|	NoBP      | Tsp+always true | BTB        | TS+Gshare
 -----	|	--------- | --------------- | --------   | ---------
 dhr	|	0.623651  | 0.195532        | 0.557129   | 0.197821
 med	|	0.497022  | 0.373333        | 0.382523   | 0.331351
