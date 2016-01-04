@@ -113,10 +113,10 @@ class TSPredictor : public BranchPredictor
         }
     };
   private:
-    inline uint32_t hash_with_history(const uint32_t pc) {
+    inline uint64_t hash_with_history(const uint32_t pc) {
       // Use 34 bit of history and 30 bit of pc.
       // It's just because that it fit uint64_t.
-      return (this->history_<<30)|(pc>>2);
+      return uint32_t((this->history_<<30)|(pc>>2));
     }
     uint64_t history_ = 0;
 
