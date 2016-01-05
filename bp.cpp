@@ -81,55 +81,14 @@ class TSPredictor : public BranchPredictor
         }
     };
 
-    class TsReplayHeadCache: public Cache<uint64_t, uint16_t> {
-      public:
-        TsReplayHeadCache(int assoc, int n_order, DataType timeout):
-          Cache<uint64_t, uint16_t>(assoc, n_order),
-          timestamp_(timeout), timeout_(timeout)
-        {
-          for (int i = 0; i < this->assoc_<<this->n_order_; ++i) {
-            this->storage_[i].second = 0;
-          }
-        }
-        DataType timestamp_;
-      protected:
-        DataType timeout_;
-        virtual bool Match(const AddrType addr, const EntryType &e) {
-          return
-            e.first == addr and
-            e.second+this->timeout_ > this->timestamp_ and
-            e.second > this->timestamp_-this->timeout_;
-        }
-        virtual EntryType* FindInvalid(EntryType *target_set) {
-          for (int i = 0; i < this->assoc_; ++i) {
-            if (
-              target_set[i].second+this->timeout_ > this->timestamp_ and
-              target_set[i].second > this->timestamp_-this->timeout_
-            ) {
-              return target_set+i;
-            }
-          }
-          return nullptr;
-        }
-    };
   private:
     inline uint64_t hash_with_history(const uint32_t pc) {
       // Use 34 bit of history and 30 bit of pc.
       // It's just because that it fit uint64_t.
-      return uint32_t((this->history_<<30)|(pc>>2));
+      return (this->history_<<30)|(pc>>2);
     }
     uint64_t history_ = 0;
-
-    /* Use TS history of TS_LEN
-     * In tsc, we use a timestamp to represent the replaying head.
-     * We can compare the current timestamp and the recorded timestamp to check whether it's valid.
-     * Currently we just accept timestamp overflow.
-     */
-    static constexpr uint16_t TS_LEN = 1024; // must divide 65536
-    uint16_t replay_position_ = 0;
-    bool ts_history_[TS_LEN];
-    bool base_prediction_ = false, replaying_ = false;
-    TsReplayHeadCache tsc_;
+    uint64_t bp_correct_history_ = 0;
     BranchTargetCache btc_;
 
     //gshare_table
@@ -138,7 +97,6 @@ class TSPredictor : public BranchPredictor
   public:
     TSPredictor ( struct bp_io& io ) :
       BranchPredictor ( io ),
-      tsc_(4, 10, TS_LEN),
       btc_(4, 10),
       gshare_table(new int8_t[GSHARE_SIZE])
     {
@@ -152,28 +110,29 @@ class TSPredictor : public BranchPredictor
 
     inline int8_t* gshare_choose ( const uint32_t pc )
     {
-      // Shift PC right two because lower two bits always zero.
-      // hash(exclusive or) from pc and global history
-      return gshare_table.get() + (hash_with_history(pc)%GSHARE_SIZE);
+      // Use only 2 bit history
+      return gshare_table.get() + (uint32_t(hash_with_history(pc))%GSHARE_SIZE);
     }
 
     uint32_t predict_fetch ( uint32_t pc )
     {
-      this->base_prediction_ = *gshare_choose(pc) >= 2;
-      bool ts_prediction = this->base_prediction_;
-      if (this->replaying_) {
-        if (this->ts_history_[this->replay_position_]) {
-          ts_prediction = not ts_prediction;
-        }
-        WRAP_INC(this->replay_position_, TS_LEN);
-      }
-      if (ts_prediction) {
-        // Lookup branch target buffer
-        BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
-        return entry == nullptr ? 0 : entry->second;
-      } else {
+      BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
+      if (entry == nullptr) {
         return 0;
       }
+      int8_t *gshare_entry = gshare_choose(pc);
+      bool prediction = *gshare_entry >= 2;
+      const int nbit = 7;
+      uint64_t mask = (uint64_t(1)<<nbit)-1;
+      for (int i = 1; i < 15-nbit; ++i) {
+        if ((this->bp_correct_history_ & mask) == ((this->bp_correct_history_>>i) & mask)) {
+          if (((this->bp_correct_history_>>(i-1)) & 1) == 0) {
+            prediction = not prediction;
+          }
+          break;
+        }
+      }
+      return prediction ? entry->second : 0;
     }
 
     void update_execute ( uint32_t pc,
@@ -185,10 +144,13 @@ class TSPredictor : public BranchPredictor
       if (not is_brjmp) {
         return;
       }
-      const bool outcome = pc+4 != pc_next;
       // update base predictor
+      const bool outcome = pc+4 != pc_next;
       int8_t *gshare_entry = gshare_choose(pc);
+      const bool base_prediction = *gshare_entry >= 2;
+      const bool base_is_correct = base_prediction == outcome;
       *gshare_entry = max(min(*gshare_entry + (outcome?1:-1), 3), 0);
+      this->bp_correct_history_ = (this->bp_correct_history_<<1) | base_is_correct;
       // update branch target cache
       if (outcome) {
         BranchTargetCache::EntryType *entry = this->btc_.Search(pc);
@@ -200,29 +162,6 @@ class TSPredictor : public BranchPredictor
         // Store pc -> pc_next mapping
         assert(entry->first == pc);
         entry->second = pc_next;
-      }
-      const bool base_is_correct = this->base_prediction_ == outcome;
-      this->history_ = (this->history_<<1) | outcome;
-      this->ts_history_[this->tsc_.timestamp_%TS_LEN] = base_is_correct;
-      this->tsc_.timestamp_++;
-      if (mispredict) {
-        this->replaying_ = false;
-      }
-      if (not base_is_correct) {
-        TsReplayHeadCache::AddrType hashed = hash_with_history(pc);
-        TsReplayHeadCache::EntryType *entry = this->tsc_.Search(hashed);
-        if (entry != nullptr) {
-          // Found
-          this->replay_position_ = entry->second;
-          this->replaying_ = true;
-        } else {
-          // Not found
-          entry = this->tsc_.FindInsert(hashed).second;
-          entry->first = hashed;
-        }
-        // Store (pc, history) -> timestamp mapping
-        assert(entry->first == hashed);
-        entry->second = this->tsc_.timestamp_;
       }
     }
 };
